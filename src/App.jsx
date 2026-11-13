@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import {
   Plus, ShieldCheck, Lock, FolderOpen, Upload,
-  Eye, Download, X, Filter, Loader2, Maximize2
+  Eye, Download, X, Filter, Loader2, Maximize2, Trash2
 } from 'lucide-react';
 
 // Supabase Configuration
@@ -32,7 +32,7 @@ export default function App() {
   // Modals & Forms State
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedProject, setSelectedProject] = useState(null);
-  const [previewMedia, setPreviewMedia] = useState(null); // For Lightbox image open
+  const [previewMedia, setPreviewMedia] = useState(null);
 
   // New Project Form State
   const [newTitle, setNewTitle] = useState('');
@@ -200,6 +200,55 @@ export default function App() {
     }
   };
 
+  // Delete Individual Media Item from Project
+  const handleRemoveMediaItem = async (mediaIdToRemove) => {
+    if (!window.confirm('Are you sure you want to delete this media file?')) return;
+
+    try {
+      const updatedMediaList = selectedProject.media.filter(item => item.id !== mediaIdToRemove);
+
+      const { error } = await supabase
+        .from('projects')
+        .update({ media: updatedMediaList })
+        .eq('id', selectedProject.id);
+
+      if (error) throw error;
+
+      const updatedProj = {
+        ...selectedProject,
+        media: updatedMediaList
+      };
+
+      setSelectedProject(updatedProj);
+      setProjects(projects.map(p => p.id === updatedProj.id ? updatedProj : p));
+      alert('Media item removed successfully!');
+    } catch (error) {
+      console.error('Error removing media:', error.message);
+      alert('Failed to remove media: ' + error.message);
+    }
+  };
+
+  // Delete Entire Project
+  const handleDeleteProject = async (projectId) => {
+    if (!window.confirm('Are you sure you want to delete this entire project? This action cannot be undone!')) return;
+
+    try {
+      const { error } = await supabase
+        .from('projects')
+        .delete()
+        .eq('id', projectId);
+
+      if (error) throw error;
+
+      setProjects(projects.filter(p => p.id !== projectId));
+      setSelectedProject(null);
+      alert('Project deleted successfully!');
+    } catch (error) {
+      console.error('Error deleting project:', error.message);
+      alert('Failed to delete project: ' + error.message);
+    }
+  };
+
   // Filter Projects
   const filteredProjects = activeFilter === 'All'
     ? projects
@@ -305,7 +354,7 @@ export default function App() {
                 <div
                   key={project.id}
                   onClick={() => setSelectedProject(project)}
-                  className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-md hover:border-amber-400 transition cursor-pointer flex flex-col justify-between group"
+                  className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-md hover:border-amber-400 transition cursor-pointer flex flex-col justify-between group relative"
                 >
                   <div>
                     {/* Thumbnail Preview */}
@@ -335,9 +384,23 @@ export default function App() {
 
                   <div className="px-5 pb-5 pt-3 border-t border-slate-100 flex justify-between items-center text-xs text-slate-500">
                     <span>📷 {project.media ? project.media.length : 0} Files uploaded</span>
-                    <span className="text-amber-600 font-semibold group-hover:underline flex items-center gap-1">
-                      View Gallery <Eye className="w-3.5 h-3.5" />
-                    </span>
+                    <div className="flex items-center gap-3">
+                      {isAdmin && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteProject(project.id);
+                          }}
+                          className="text-red-500 hover:text-red-700 p-1 hover:bg-red-50 rounded transition"
+                          title="Delete Project"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      <span className="text-amber-600 font-semibold group-hover:underline flex items-center gap-1">
+                        View <Eye className="w-3.5 h-3.5" />
+                      </span>
+                    </div>
                   </div>
                 </div>
               ))
@@ -453,9 +516,20 @@ export default function App() {
                 </span>
                 <h2 className="text-xl font-bold text-slate-900 mt-1">{selectedProject.title}</h2>
               </div>
-              <button onClick={() => setSelectedProject(null)} className="text-slate-400 hover:text-slate-700 p-2">
-                <X className="w-6 h-6" />
-              </button>
+              <div className="flex items-center gap-2">
+                {isAdmin && (
+                  <button
+                    onClick={() => handleDeleteProject(selectedProject.id)}
+                    className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
+                    title="Delete Project"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete Project
+                  </button>
+                )}
+                <button onClick={() => setSelectedProject(null)} className="text-slate-400 hover:text-slate-700 p-2">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
             </div>
 
             {/* Modal Body */}
@@ -500,14 +574,25 @@ export default function App() {
               {/* Media Gallery Grid */}
               <div>
                 <h4 className="text-sm font-semibold text-slate-500 mb-3">Project Media Gallery ({selectedProject.media ? selectedProject.media.length : 0} files)</h4>
-                <p className="text-xs text-slate-400 mb-3">💡 Tip: Click on any image/video to view it full-screen for clients.</p>
+                <p className="text-xs text-slate-400 mb-3">💡 Tip: Click on any image/video to view full screen. Admin can remove individual files anytime.</p>
 
                 {!selectedProject.media || selectedProject.media.length === 0 ? (
                   <p className="text-slate-400 text-sm py-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">No media files uploaded yet.</p>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                     {selectedProject.media.map((item, idx) => (
-                      <div key={item.id || idx} className="bg-white border border-slate-200 rounded-xl overflow-hidden group shadow-sm hover:shadow-md transition">
+                      <div key={item.id || idx} className="bg-white border border-slate-200 rounded-xl overflow-hidden group shadow-sm hover:shadow-md transition relative">
+                        {/* Admin Delete Individual Image Button */}
+                        {isAdmin && (
+                          <button
+                            onClick={() => handleRemoveMediaItem(item.id)}
+                            className="absolute top-2 right-2 z-10 bg-red-600 hover:bg-red-700 text-white p-1.5 rounded-full shadow-md opacity-0 group-hover:opacity-100 transition"
+                            title="Remove this file"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
                         <div
                           onClick={() => setPreviewMedia(item)}
                           className="h-32 bg-slate-100 flex items-center justify-center overflow-hidden relative cursor-pointer"
@@ -555,7 +640,7 @@ export default function App() {
         </div>
       )}
 
-      {/* LIGHTBOX MODAL: Full Screen Image/Video Viewer for Clients */}
+      {/* LIGHTBOX MODAL: Full Screen Image/Video Viewer */}
       {previewMedia && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="relative max-w-5xl max-h-[90vh] w-full flex flex-col items-center">
