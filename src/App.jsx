@@ -1,8 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import {
   Plus, ShieldCheck, Lock, FolderOpen, Upload,
-  Eye, Download, X, CheckCircle, Filter, ArrowLeft
+  Eye, Download, X, Filter, Loader2
 } from 'lucide-react';
+
+// Supabase Configuration
+const SUPABASE_URL = 'https://ogbsvqhtyxncdyootatz.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_ORi4qEY5nF45AzfKQrNGLw_DgX9JPJV';
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const CATEGORIES = [
   'All',
@@ -19,29 +25,9 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [passcode, setPasscode] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
-
-  // Sample initial projects
-  const [projects, setProjects] = useState([
-    {
-      id: 1,
-      name: 'Modern Luxury Villa - Indore',
-      category: 'Residential',
-      description: '3000 sq.ft duplex residential villa with modern elevation and landscape garden.',
-      media: [
-        { id: 101, url: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=800&q=80', type: 'image', name: 'front-elevation.jpg' },
-        { id: 102, url: 'https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=800&q=80', type: 'image', name: 'living-room.jpg' }
-      ]
-    },
-    {
-      id: 2,
-      name: 'Commercial Office Complex',
-      category: 'Commercial',
-      description: 'Multi-story glass facade office building at Vijay Nagar.',
-      media: [
-        { id: 201, url: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80', type: 'image', name: 'building-view.jpg' }
-      ]
-    }
-  ]);
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
 
   // Modals & Forms State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -56,6 +42,28 @@ export default function App() {
   // Add more media to existing project state
   const [additionalFiles, setAdditionalFiles] = useState([]);
 
+  // Fetch Projects from Supabase on mount
+  useEffect(() => {
+    fetchProjects();
+  }, []);
+
+  const fetchProjects = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .order('id', { ascending: false });
+
+      if (error) throw error;
+      if (data) setProjects(data);
+    } catch (error) {
+      console.error('Error fetching projects:', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Handle Admin Login (Default PIN: 1234)
   const handleLogin = (e) => {
     e.preventDefault();
@@ -67,11 +75,44 @@ export default function App() {
     }
   };
 
-  // Handle File Selection
+  // Upload raw files to Supabase Storage Bucket
+  const uploadFilesToSupabase = async (filesArray) => {
+    const uploadedMedia = [];
+    for (let fileObj of filesArray) {
+      const file = fileObj.file;
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('architecture-media')
+        .upload(filePath, file);
+
+      if (uploadError) {
+        console.error('Upload failed:', uploadError.message);
+        continue;
+      }
+
+      // Get Public URL
+      const { data: publicURLData } = supabase.storage
+        .from('architecture-media')
+        .getPublicUrl(filePath);
+
+      uploadedMedia.push({
+        id: Date.now() + Math.random(),
+        url: publicURLData.publicUrl,
+        type: file.type.startsWith('video') ? 'video' : 'image',
+        name: file.name
+      });
+    }
+    return uploadedMedia;
+  };
+
+  // Handle File Selection (storing file object for upload)
   const handleFileChange = (e, isAdditional = false) => {
     const filesArray = Array.from(e.target.files).map(file => ({
-      id: Date.now() + Math.random(),
-      url: URL.createObjectURL(file),
+      file: file,
+      previewUrl: URL.createObjectURL(file),
       type: file.type.startsWith('video') ? 'video' : 'image',
       name: file.name
     }));
@@ -83,47 +124,82 @@ export default function App() {
     }
   };
 
-  // Create New Project
-  const handleCreateProject = (e) => {
+  // Create New Project & Save to Supabase
+  const handleCreateProject = async (e) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
-    const newProject = {
-      id: Date.now(),
-      name: newTitle,
-      category: newCategory,
-      description: newDesc,
-      media: newFiles
-    };
+    try {
+      setUploading(true);
+      // 1. Upload files to storage bucket
+      const uploadedMedia = await uploadFilesToSupabase(newFiles);
 
-    setProjects([newProject, ...projects]);
-    setNewTitle('');
-    setNewDesc('');
-    setNewCategory('Architecture');
-    setNewFiles([]);
-    setShowAddModal(false);
+      const newProjectData = {
+        title: newTitle,
+        category: newCategory,
+        description: newDesc,
+        media: uploadedMedia
+      };
+
+      // 2. Insert record into projects table
+      const { data, error } = await supabase
+        .from('projects')
+        .insert([newProjectData])
+        .select();
+
+      if (error) throw error;
+
+      if (data) {
+        setProjects([data[0], ...projects]);
+      }
+
+      // Reset Form & Close Modal
+      setNewTitle('');
+      setNewDesc('');
+      setNewCategory('Architecture');
+      setNewFiles([]);
+      setShowAddModal(false);
+      alert('Project successfully created and saved to Cloud!');
+    } catch (error) {
+      console.error('Error creating project:', error.message);
+      alert('Failed to create project: ' + error.message);
+    } finally {
+      setUploading(false);
+    }
   };
 
   // Add More Media to Selected Project
-  const handleAddMoreMedia = (e) => {
+  const handleAddMoreMedia = async (e) => {
     e.preventDefault();
     if (additionalFiles.length === 0) return;
 
-    const updatedProjects = projects.map(proj => {
-      if (proj.id === selectedProject.id) {
-        const updatedProj = {
-          ...proj,
-          media: [...proj.media, ...additionalFiles]
-        };
-        setSelectedProject(updatedProj);
-        return updatedProj;
-      }
-      return proj;
-    });
+    try {
+      setUploading(true);
+      const newlyUploaded = await uploadFilesToSupabase(additionalFiles);
+      const updatedMediaList = [...selectedProject.media, ...newlyUploaded];
 
-    setProjects(updatedProjects);
-    setAdditionalFiles([]);
-    alert('New media files successfully added!');
+      const { error } = await supabase
+        .from('projects')
+        .update({ media: updatedMediaList })
+        .eq('id', selectedProject.id);
+
+      if (error) throw error;
+
+      const updatedProj = {
+        ...selectedProject,
+        media: updatedMediaList
+      };
+
+      setSelectedProject(updatedProj);
+      setProjects(projects.map(p => p.id === updatedProj.id ? updatedProj : p));
+      setAdditionalFiles([]);
+      alert('New media files successfully uploaded and saved!');
+    } catch (error) {
+      console.error('Error adding media:', error.message);
+      alert('Failed to upload media: ' + error.message);
+    } finally {
+      setUploading(false);
+    }
   };
 
   // Filter Projects
@@ -143,7 +219,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-wide text-white">Architecture Portfolio Dashboard</h1>
-              <p className="text-xs text-slate-400">Site Visits & Media Management Portal</p>
+              <p className="text-xs text-slate-400">Cloud Connected Site Visits & Media Portal</p>
             </div>
           </div>
 
@@ -212,60 +288,68 @@ export default function App() {
           ))}
         </div>
 
-        {/* Projects Grid */}
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredProjects.length === 0 ? (
-            <div className="col-span-full text-center py-16 bg-slate-800/50 rounded-2xl border border-slate-700">
-              <FolderOpen className="w-12 h-12 text-slate-500 mx-auto mb-3" />
-              <p className="text-slate-400 text-lg">No projects found in this category.</p>
-            </div>
-          ) : (
-            filteredProjects.map(project => (
-              <div
-                key={project.id}
-                onClick={() => setSelectedProject(project)}
-                className="bg-slate-800 border border-slate-700/80 rounded-2xl overflow-hidden shadow-lg hover:border-amber-500/50 transition cursor-pointer flex flex-col justify-between group"
-              >
-                <div>
-                  {/* Thumbnail Preview */}
-                  <div className="h-48 bg-slate-900 relative overflow-hidden">
-                    {project.media.length > 0 ? (
-                      project.media[0].type === 'image' ? (
-                        <img src={project.media[0].url} alt={project.name} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+        {/* Loading State */}
+        {loading ? (
+          <div className="flex justify-center items-center py-24">
+            <Loader2 className="w-10 h-10 animate-spin text-amber-500" />
+            <span className="ml-3 text-slate-400 text-sm">Loading projects from cloud...</span>
+          </div>
+        ) : (
+          /* Projects Grid */
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {filteredProjects.length === 0 ? (
+              <div className="col-span-full text-center py-16 bg-slate-800/50 rounded-2xl border border-slate-700">
+                <FolderOpen className="w-12 h-12 text-slate-500 mx-auto mb-3" />
+                <p className="text-slate-400 text-lg">No projects found in this category.</p>
+              </div>
+            ) : (
+              filteredProjects.map(project => (
+                <div
+                  key={project.id}
+                  onClick={() => setSelectedProject(project)}
+                  className="bg-slate-800 border border-slate-700/80 rounded-2xl overflow-hidden shadow-lg hover:border-amber-500/50 transition cursor-pointer flex flex-col justify-between group"
+                >
+                  <div>
+                    {/* Thumbnail Preview */}
+                    <div className="h-48 bg-slate-900 relative overflow-hidden">
+                      {project.media && project.media.length > 0 ? (
+                        project.media[0].type === 'image' ? (
+                          <img src={project.media[0].url} alt={project.title} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+                        ) : (
+                          <video src={project.media[0].url} className="w-full h-full object-cover" />
+                        )
                       ) : (
-                        <video src={project.media[0].url} className="w-full h-full object-cover" />
-                      )
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-slate-600">
-                        <FolderOpen className="w-10 h-10" />
-                      </div>
-                    )}
-                    <span className="absolute top-3 right-3 bg-slate-900/80 backdrop-blur-md text-amber-400 border border-amber-500/30 text-xs font-semibold px-2.5 py-1 rounded-lg">
-                      {project.category}
+                        <div className="flex items-center justify-center h-full text-slate-600">
+                          <FolderOpen className="w-10 h-10" />
+                        </div>
+                      )}
+                      <span className="absolute top-3 right-3 bg-slate-900/80 backdrop-blur-md text-amber-400 border border-amber-500/30 text-xs font-semibold px-2.5 py-1 rounded-lg">
+                        {project.category}
+                      </span>
+                    </div>
+
+                    {/* Details */}
+                    <div className="p-5">
+                      <h3 className="text-lg font-bold text-white group-hover:text-amber-400 transition">{project.title}</h3>
+                      <p className="text-slate-400 text-sm mt-2 line-clamp-2">{project.description || 'No description provided.'}</p>
+                    </div>
+                  </div>
+
+                  <div className="px-5 pb-5 pt-3 border-t border-slate-700/50 flex justify-between items-center text-xs text-slate-400">
+                    <span>📷 {project.media ? project.media.length : 0} Files uploaded</span>
+                    <span className="text-amber-400 font-medium group-hover:underline flex items-center gap-1">
+                      View Gallery <Eye className="w-3.5 h-3.5" />
                     </span>
                   </div>
-
-                  {/* Details */}
-                  <div className="p-5">
-                    <h3 className="text-lg font-bold text-white group-hover:text-amber-400 transition">{project.name}</h3>
-                    <p className="text-slate-400 text-sm mt-2 line-clamp-2">{project.description || 'No description provided.'}</p>
-                  </div>
                 </div>
-
-                <div className="px-5 pb-5 pt-3 border-t border-slate-700/50 flex justify-between items-center text-xs text-slate-400">
-                  <span>📷 {project.media.length} Files uploaded</span>
-                  <span className="text-amber-400 font-medium group-hover:underline flex items-center gap-1">
-                    View Gallery <Eye className="w-3.5 h-3.5" />
-                  </span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+              ))
+            )}
+          </div>
+        )}
 
       </main>
 
-      {/* Floating Add Button for Mobile/Desktop when Admin */}
+      {/* Floating Add Button */}
       {isAdmin && (
         <button
           onClick={() => setShowAddModal(true)}
@@ -333,7 +417,7 @@ export default function App() {
                   onChange={handleFileChange}
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 cursor-pointer"
                 />
-                <p className="text-xs text-slate-500 mt-1">{newFiles.length} files selected for upload.</p>
+                <p className="text-xs text-slate-500 mt-1">{newFiles.length} files selected.</p>
               </div>
 
               <div className="pt-4 flex justify-end gap-3">
@@ -346,9 +430,11 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm shadow-md"
+                  disabled={uploading}
+                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm shadow-md flex items-center gap-2"
                 >
-                  Save Project
+                  {uploading && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {uploading ? 'Uploading to Cloud...' : 'Save Project'}
                 </button>
               </div>
             </form>
@@ -367,7 +453,7 @@ export default function App() {
                 <span className="text-xs font-semibold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-md border border-amber-500/20">
                   {selectedProject.category}
                 </span>
-                <h2 className="text-xl font-bold text-white mt-1">{selectedProject.name}</h2>
+                <h2 className="text-xl font-bold text-white mt-1">{selectedProject.title}</h2>
               </div>
               <button onClick={() => setSelectedProject(null)} className="text-slate-400 hover:text-white p-2">
                 <X className="w-6 h-6" />
@@ -400,13 +486,14 @@ export default function App() {
                     />
                     <button
                       type="submit"
-                      disabled={additionalFiles.length === 0}
-                      className={`w-full sm:w-auto px-5 py-2 rounded-xl font-bold text-sm whitespace-nowrap transition ${additionalFiles.length > 0
+                      disabled={additionalFiles.length === 0 || uploading}
+                      className={`w-full sm:w-auto px-5 py-2 rounded-xl font-bold text-sm whitespace-nowrap transition flex items-center justify-center gap-2 ${additionalFiles.length > 0 && !uploading
                         ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-md'
                         : 'bg-slate-800 text-slate-500 cursor-not-allowed'
                         }`}
                     >
-                      Upload ({additionalFiles.length})
+                      {uploading && <Loader2 className="w-4 h-4 animate-spin" />}
+                      {uploading ? 'Uploading...' : `Upload (${additionalFiles.length})`}
                     </button>
                   </form>
                 </div>
@@ -414,8 +501,8 @@ export default function App() {
 
               {/* Media Gallery Grid */}
               <div>
-                <h4 className="text-sm font-semibold text-slate-400 mb-3">Project Media ({selectedProject.media.length} files)</h4>
-                {selectedProject.media.length === 0 ? (
+                <h4 className="text-sm font-semibold text-slate-400 mb-3">Project Media ({selectedProject.media ? selectedProject.media.length : 0} files)</h4>
+                {!selectedProject.media || selectedProject.media.length === 0 ? (
                   <p className="text-slate-500 text-sm py-8 text-center bg-slate-900/40 rounded-xl">No media files uploaded yet.</p>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
